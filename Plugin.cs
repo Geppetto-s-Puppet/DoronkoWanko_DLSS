@@ -1,22 +1,97 @@
 ﻿using BepInEx;
 using BepInEx.Logging;
-//using UnityEngine;
+using System.Runtime.InteropServices;
+using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace DoronkoWanko_DLSS
 {
-    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "1.0.0")]
+    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "1.0.2")]
     public class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
 
-        void Awake()
+        void Awake() // Pluginクラスは単なるエントリポイント
         {
-            Log = Logger;
-            Log.LogInfo("DoronkoWanko_DLSS loaded");
+            (Log = Logger).LogInfo("Plugin loaded successfully!");
+            SceneManager.sceneLoaded += OnSceneLoaded;
         }
+
+        void OnSceneLoaded(Scene scene, LoadSceneMode mode) // シーン遷移の度にカメラ走査
+        {
+            var dlss = new GameObject("DW_DLSS").AddComponent<DW_DLSS>();
+            DontDestroyOnLoad(dlss);
+            foreach (var cam in Camera.allCameras)
+            {
+                Log.LogInfo($"Camera Detected: {scene.name}/{cam.name}({cam.depth})");
+                switch (cam.name)
+                {
+                    case "UI Camera": dlss.uiCamera = cam; break;
+                    case "Main Camera": dlss.mainCamera = cam; break;
+                }
+            }
+        }
+
+        public class DW_DLSS : MonoBehaviour
+        {
+            internal Camera uiCamera;
+            internal Camera mainCamera;
+            bool uKeyWasDown, rKeyWasDown;
+            [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
+
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Init();
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Update();
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Draw();
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Release();
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Show();
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Hide();
+
+            void Awake()
+            {
+                DW_Init();
+            }
+
+            void Update()
+            {
+                bool uDown = (GetAsyncKeyState(0x55) & 0x8000) != 0;
+                if (uDown && !uKeyWasDown) // UIトグル(U) ※タイトル画面だけuiCameraが存在しない
+                {
+                    if (uiCamera != null)
+                        uiCamera.enabled = !uiCamera.enabled;
+                }
+                uKeyWasDown = uDown;
+
+                bool rDown = (GetAsyncKeyState(0x52) & 0x8000) != 0;
+                if (rDown && !rKeyWasDown) // シェーダー(R)
+                {
+                    // シェーダーリロード
+                }
+                rKeyWasDown = rDown;
+            }
+
+            void LateUpdate()
+            {
+                DW_Draw(); // 全Update終了後に描画
+            }
+
+            void OnDestroy()
+            {
+                DW_Release();
+            }
+
+            void OnApplicationFocus(bool hasFocus)
+            {
+                if (hasFocus) DW_Show();
+                else DW_Hide();
+            }
+
+
+
+        }
+
+
     }
 }
-
 
 
 
@@ -41,9 +116,6 @@ namespace DoronkoWanko_DLSS
 //        [DllImport("com.alex.peakhlsl.native.dll")] static extern int NativeOverlay_AcquireUnityDevice(IntPtr sampleResourcePtr);
 //        [DllImport("com.alex.peakhlsl.native.dll")] static extern void NativeOverlay_UpdateTextures(IntPtr colorPtr, IntPtr depthPtr, IntPtr normalPtr, int screenW, int screenH);
 
-//        // ──── 定数 ────
-//        const int VK_SLASH = 0xBF;
-//        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
 
 //        static readonly string[] ModeNames = { "OFF", "Passthrough", "Depth", "Normals" };
 
