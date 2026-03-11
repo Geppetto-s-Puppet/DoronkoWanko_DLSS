@@ -1,12 +1,13 @@
 ﻿using BepInEx;
 using BepInEx.Logging;
+using System;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace DoronkoWanko_DLSS
 {
-    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "1.0.2")]
+    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "1.0.3")]
     public class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
@@ -39,12 +40,42 @@ namespace DoronkoWanko_DLSS
             bool uKeyWasDown, rKeyWasDown;
             [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
 
+            string shaderPath = null;
+            bool isDialogOpen = false;
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Init();
-            [DllImport("DW_DLSS_N.dll")] static extern void DW_Update();
+            [DllImport("DW_DLSS_N.dll", CharSet = CharSet.Unicode)] static extern void DW_Update(string shaderPath);
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Draw();
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Release();
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Show();
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Hide();
+
+
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            struct OPENFILENAME
+            {
+                public int lStructSize;
+                public IntPtr hwndOwner;
+                public IntPtr hInstance;
+                public string lpstrFilter;
+                public string lpstrCustomFilter;
+                public int nMaxCustFilter;
+                public int nFilterIndex;
+                public string lpstrFile;
+                public int nMaxFile;
+                public string lpstrFileTitle;
+                public int nMaxFileTitle;
+                public string lpstrInitialDir;
+                public string lpstrTitle;
+                public int Flags;
+                public short nFileOffset;
+                public short nFileExtension;
+                public string lpstrDefExt;
+                public IntPtr lCustData;
+                public IntPtr lpfnHook;
+                public string lpTemplateName;
+            }
+            [DllImport("comdlg32.dll", CharSet = CharSet.Unicode)]
+            static extern bool GetOpenFileName(ref OPENFILENAME ofn);
 
             void Awake()
             {
@@ -53,6 +84,9 @@ namespace DoronkoWanko_DLSS
 
             void Update()
             {
+                if (!Application.isFocused) return;
+                if (shaderPath != null) DW_Update(shaderPath);
+
                 bool uDown = (GetAsyncKeyState(0x55) & 0x8000) != 0;
                 if (uDown && !uKeyWasDown) // UIトグル(U) ※タイトル画面だけuiCameraが存在しない
                 {
@@ -62,16 +96,41 @@ namespace DoronkoWanko_DLSS
                 uKeyWasDown = uDown;
 
                 bool rDown = (GetAsyncKeyState(0x52) & 0x8000) != 0;
-                if (rDown && !rKeyWasDown) // シェーダー(R)
+                if (rDown && !rKeyWasDown) // シェーダー(R) ※ふつうにやるとモーダルダイアログでゲームが止まるため
                 {
-                    // シェーダーリロード
+                    DW_Hide();
+                    shaderPath = null;
+                    isDialogOpen = true;
+                    var thread = new System.Threading.Thread(() =>
+                    {
+                        var ofn = new OPENFILENAME();
+                        ofn.lStructSize = Marshal.SizeOf(ofn);
+                        ofn.lpstrFile = new string('\0', 256);
+                        ofn.nMaxFile = 256;
+                        ofn.lpstrFilter = "HLSL Files\0*.hlsl\0";  // All Files削除
+                        ofn.nFilterIndex = 1;
+                        ofn.lpstrInitialDir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "BepInEx", "plugins");
+                        ofn.lpstrTitle = "シェーダーを選択";
+                        ofn.Flags = 0x00001000; // OFN_FILEMUSTEXIST
+
+                        if (GetOpenFileName(ref ofn))
+                        {
+                            shaderPath = ofn.lpstrFile;
+                            Plugin.Log.LogInfo($"Shader selected: {shaderPath}");
+                        }
+                        isDialogOpen = false;
+                        if (shaderPath != null) DW_Show();
+                    });
+                    thread.SetApartmentState(System.Threading.ApartmentState.STA);
+                    thread.IsBackground = true;
+                    thread.Start();
                 }
                 rKeyWasDown = rDown;
             }
 
             void LateUpdate()
             {
-                DW_Draw(); // 全Update終了後に描画
+                if (!isDialogOpen && shaderPath != null) DW_Draw();
             }
 
             void OnDestroy()
@@ -81,12 +140,10 @@ namespace DoronkoWanko_DLSS
 
             void OnApplicationFocus(bool hasFocus)
             {
-                if (hasFocus) DW_Show();
+                if (isDialogOpen) return;
+                if (hasFocus && shaderPath != null) DW_Show();
                 else DW_Hide();
             }
-
-
-
         }
 
 
