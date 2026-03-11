@@ -15,3 +15,11 @@
 - ゲームのログ: `"D:\SteamLibrary\steamapps\common\DoronkoWanko\BepInEx\LogOutput.log"`
 - `GraphicsSettings.currentRenderPipeline.GetType().Name`は`UniversalRenderPipelineAsset`になっている
 - Win32 ウィンドウスタイル `https://learn.microsoft.com/ja-jp/windows/win32/winmsg/extended-window-styles`
+
+
+
+
+### 未整理
+デバイス共有：ダミーRenderTextureを1枚作ってGetNativeTexturePtr()でUnityのD3D12デバイスを特定し、DLLに渡す。DLL側は自前でデバイスを作るのをやめてUnityのものを借りる
+ScriptableRenderPass注入：URPパイプラインにカスタムパスを差し込んで、カラー・深度・法線・モーションベクターのポインタをDLLに渡す
+DLL側でテクスチャをSRVとしてシェーダーに渡す：ルートシグネチャを拡張してシェーダーからサンプリングできるようにする

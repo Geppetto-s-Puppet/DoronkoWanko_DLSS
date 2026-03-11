@@ -34,6 +34,13 @@
     <Reference Include="BepInEx">
       <HintPath>D:\SteamLibrary\steamapps\common\DoronkoWanko\BepInEx\core\BepInEx.dll</HintPath>
     </Reference>
+    <Reference Include="Unity.RenderPipelines.Core.Runtime, Version=0.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>D:\SteamLibrary\steamapps\common\DoronkoWanko\DoronkoWanko_Data\Managed\Unity.RenderPipelines.Core.Runtime.dll</HintPath>
+    </Reference>
+    <Reference Include="Unity.RenderPipelines.Universal.Runtime">
+      <HintPath>D:\SteamLibrary\steamapps\common\DoronkoWanko\DoronkoWanko_Data\Managed\Unity.RenderPipelines.Universal.Runtime.dll</HintPath>
+    </Reference>
     <Reference Include="UnityEngine">
       <HintPath>D:\SteamLibrary\steamapps\common\DoronkoWanko\DoronkoWanko_Data\Managed\UnityEngine.dll</HintPath>
     </Reference>

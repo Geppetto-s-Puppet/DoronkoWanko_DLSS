@@ -10,7 +10,7 @@
 
 HWND g_hWnd = nullptr;
 IDXGIFactory6* g_factory           = nullptr; // DX12用のバージョン
-IDXGIAdapter1* g_adapter           = nullptr; // アダプターはGPUのこと
+//IDXGIAdapter1* g_adapter           = nullptr; // アダプターはGPUのこと
 ID3D12Device* g_device             = nullptr;
 ID3D12CommandQueue* g_commandQueue = nullptr;
 IDXGISwapChain3* g_swapChain       = nullptr; // ダブルバッファリング
@@ -53,9 +53,11 @@ ID3D12DescriptorHeap* g_cbvHeap = nullptr;
 
 UINT g_scrW = 0;
 UINT g_scrH = 0;
+ID3D12Resource* g_textures[8] = {}; // t0〜t7
+UINT g_srvDescriptorSize = 0;
 
 extern "C" {
-    __declspec(dllexport) void DW_Init()
+    __declspec(dllexport) void DW_Init(void* sampleResourcePtr)
     {
         HINSTANCE hInst = GetModuleHandle(nullptr);
         g_scrW = GetSystemMetrics(SM_CXSCREEN);
@@ -82,18 +84,23 @@ extern "C" {
         // まずウィンドウを生成・表示
         ShowWindow(g_hWnd, SW_SHOW); // MessageBoxW(nullptr, L"ウィンドウ作成完了", L"DW_DLSS", MB_OK);
         // つぎにGPUを探してくる
-        CreateDXGIFactory2(0, IID_PPV_ARGS(&g_factory)); // これ、DX12のAPIの慣習？というか惰性でこんな関数名
-        g_factory->EnumAdapterByGpuPreference(
-            0, // 一番高性能なGPUを選ぶためにこれ
-            DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-            IID_PPV_ARGS(&g_adapter)
-        );
-        // つぎにGPUとの通信窓口
-        D3D12CreateDevice(
-            g_adapter,              // さっき選んだGPU
-            D3D_FEATURE_LEVEL_12_0, // DX12の機能使用
-            IID_PPV_ARGS(&g_device)
-        );
+        //CreateDXGIFactory2(0, IID_PPV_ARGS(&g_factory)); // これ、DX12のAPIの慣習？というか惰性でこんな関数名、でもこれもUnityに任せる
+        // 
+        CreateDXGIFactory2(0, IID_PPV_ARGS(&g_factory));
+        //g_factory->EnumAdapterByGpuPreference(
+        //    0, // 一番高性能なGPUを選ぶためにこれ
+        //    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+        //    IID_PPV_ARGS(&g_adapter)
+        //);
+        // つぎにGPUとの通信窓口、でもこれはUnityと同期するので無効化
+        //D3D12CreateDevice(
+        //    g_adapter,              // さっき選んだGPU
+        //    D3D_FEATURE_LEVEL_12_0, // DX12の機能使用
+        //    IID_PPV_ARGS(&g_device)
+        //);
+        // UnityのID3D12Resourceポインタからデバイスを取得
+        auto* resource = reinterpret_cast<ID3D12Resource*>(sampleResourcePtr);
+        resource->GetDevice(IID_PPV_ARGS(&g_device));
         // つぎにGPUに命令するベルトコンベア 
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT; // 描画・計算・コピーなど全種類の命令対応
@@ -159,18 +166,33 @@ extern "C" {
         //g_device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&g_rootSignature));
         //blob->Release();
         // ルートシグネチャ（b0に定数バッファを渡すver）
-        D3D12_DESCRIPTOR_RANGE cbvRange = {};
-        cbvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV; // 定数バッファ用
-        cbvRange.NumDescriptors = 1;
-        cbvRange.BaseShaderRegister = 0; // register(b0)
+// ルートシグネチャ（b0=CBV, t0〜t7=SRV）
+        D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+        ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        ranges[0].NumDescriptors = 1;
+        ranges[0].BaseShaderRegister = 0; // b0
+        ranges[0].OffsetInDescriptorsFromTableStart = 0;
+        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        ranges[1].NumDescriptors = 8; // t0〜t7
+        ranges[1].BaseShaderRegister = 0; // t0
+        ranges[1].OffsetInDescriptorsFromTableStart = 1; // CBVの次から
         D3D12_ROOT_PARAMETER rootParam = {};
         rootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rootParam.DescriptorTable.NumDescriptorRanges = 1;
-        rootParam.DescriptorTable.pDescriptorRanges = &cbvRange;
-        rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL; // PSだけに渡す
+        rootParam.DescriptorTable.NumDescriptorRanges = 2;
+        rootParam.DescriptorTable.pDescriptorRanges = ranges;
+        rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        D3D12_STATIC_SAMPLER_DESC sampler = {};
+        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.ShaderRegister = 0; // s0
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
         rsDesc.NumParameters = 1;
         rsDesc.pParameters = &rootParam;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
         rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
         ID3DBlob* blob = nullptr;
         ID3DBlob* errBlob = nullptr;
@@ -204,7 +226,8 @@ extern "C" {
         // ※後でDraw時にセットするために必要
         // ヒープ作成
         D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc = {};
-        cbvHeapDesc.NumDescriptors = 1;
+        cbvHeapDesc.NumDescriptors = 9; // 1(CBV) + 8(SRV)
+        g_srvDescriptorSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // CBV/SRV/UAV共用の棚
         cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU可視
         g_device->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&g_cbvHeap));
@@ -271,6 +294,15 @@ cbuffer SceneParams : register(b0)
     float _pad0;
     float _pad1;
 };
+Texture2D t0 : register(t0); // color
+Texture2D t1 : register(t1); // depth
+Texture2D t2 : register(t2); // normal
+Texture2D t3 : register(t3); // motion
+Texture2D t4 : register(t4); // opaque
+Texture2D t5 : register(t5); // (reserved)
+Texture2D t6 : register(t6); // (reserved)
+Texture2D t7 : register(t7); // (reserved)
+SamplerState s0 : register(s0);
 )";
         HANDLE hFile = CreateFileW(shaderPath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
         DWORD fileSize = GetFileSize(hFile, nullptr);
@@ -383,7 +415,73 @@ cbuffer SceneParams : register(b0)
         }
         g_fenceValue++;
     }
+    __declspec(dllexport) void DW_SetTextures(void** textures, int count)
+    {
+        for (int i = 0; i < count && i < 8; i++)
+            g_textures[i] = reinterpret_cast<ID3D12Resource*>(textures[i]);
 
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = g_cbvHeap->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += g_srvDescriptorSize;
+
+        for (int i = 0; i < 8; i++)
+        {
+            if (g_textures[i])
+            {
+                D3D12_RESOURCE_DESC resDesc = g_textures[i]->GetDesc();
+
+                DXGI_FORMAT srvFormat = resDesc.Format;
+                switch (resDesc.Format)
+                {
+                    // --- 既存のDepthフォーマット ---
+                case DXGI_FORMAT_D32_FLOAT:              srvFormat = DXGI_FORMAT_R32_FLOAT; break;
+                case DXGI_FORMAT_D16_UNORM:              srvFormat = DXGI_FORMAT_R16_UNORM; break;
+                case DXGI_FORMAT_D24_UNORM_S8_UINT:      srvFormat = DXGI_FORMAT_R24_UNORM_X8_TYPELESS; break;
+                case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:   srvFormat = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS; break;
+
+                    // --- ★追加: UnityがTypelessで渡してくるパターン ---
+                case DXGI_FORMAT_R32_TYPELESS:           srvFormat = DXGI_FORMAT_R32_FLOAT; break;
+                case DXGI_FORMAT_R16_TYPELESS:           srvFormat = DXGI_FORMAT_R16_UNORM; break;
+                case DXGI_FORMAT_R24G8_TYPELESS:         srvFormat = DXGI_FORMAT_R24_UNORM_X8_TYPELESS; break;
+                case DXGI_FORMAT_R32G8X24_TYPELESS:      srvFormat = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS; break;
+                case DXGI_FORMAT_R8G8B8A8_TYPELESS:      srvFormat = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+                case DXGI_FORMAT_B8G8R8A8_TYPELESS:      srvFormat = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+                case DXGI_FORMAT_R16G16B16A16_TYPELESS:  srvFormat = DXGI_FORMAT_R16G16B16A16_FLOAT; break;
+                case DXGI_FORMAT_R11G11B10_FLOAT:        srvFormat = DXGI_FORMAT_R11G11B10_FLOAT; break; // そのままOK
+
+                    // --- ★追加: UNKNOWNは作成スキップ ---
+                case DXGI_FORMAT_UNKNOWN:
+                    // nullSRVを書いてスロットを埋める（GPU不正アクセス防止）
+                    goto write_null_srv;
+
+                default: break;
+                }
+
+                {
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                    srvDesc.Format = srvFormat;
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srvDesc.Texture2D.MipLevels = resDesc.MipLevels; // ★ 1固定じゃなくGetDescの値を使う
+                    g_device->CreateShaderResourceView(g_textures[i], &srvDesc, handle);
+                    handle.ptr += g_srvDescriptorSize;
+                    continue;
+                }
+            }
+
+        write_null_srv:
+            {
+                // ★ nullスロットにはnull SRV（黒テクスチャ相当）を書く
+                D3D12_SHADER_RESOURCE_VIEW_DESC nullSrvDesc = {};
+                nullSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                nullSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                nullSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                nullSrvDesc.Texture2D.MipLevels = 1;
+                g_device->CreateShaderResourceView(nullptr, &nullSrvDesc, handle);
+                handle.ptr += g_srvDescriptorSize;
+            }
+        }
+    }
+    
 
     __declspec(dllexport) void DW_Release()
     {
