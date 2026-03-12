@@ -20,6 +20,17 @@
 
 
 ### 未整理
+
+
+[レイヤー1] Unity の GPU デバイスを握る（今ここ）
+[レイヤー2] 自前の DX12 ウィンドウ + SwapChain を作る
+[レイヤー3] PSO / RootSignature / SRV / CommandList を作る
+
+
+
+
+
+
 デバイス共有：ダミーRenderTextureを1枚作ってGetNativeTexturePtr()でUnityのD3D12デバイスを特定し、DLLに渡す。DLL側は自前でデバイスを作るのをやめてUnityのものを借りる
 ScriptableRenderPass注入：URPパイプラインにカスタムパスを差し込んで、カラー・深度・法線・モーションベクターのポインタをDLLに渡す
 DLL側でテクスチャをSRVとしてシェーダーに渡す：ルートシグネチャを拡張してシェーダーからサンプリングできるようにする

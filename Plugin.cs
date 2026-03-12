@@ -54,10 +54,18 @@ namespace DoronkoWanko_DLSS
             [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
             void Update() { if (!Application.isFocused) return; HandleHotkeyInputs(); }
 
-            //[DllImport("DW_DLSS_N.dll")] static extern void DW_Release();
-            //void OnDestroy() => DW_Release(); // 終了して最後に呼び出される関数
-            //[DllImport("DW_DLSS_N.dll")] static extern void DW_Init();
-            //void Start() => DW_Init(); // ダミーテクスチャを渡してデバイス同期させたい
+
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Init(IntPtr probeTexture);
+            void Start() // C#側でUnityのダミーテクスチャを渡し、C++側でそれを逆引きしてデバイスを同期させる
+            {
+                var probe = new RenderTexture(4, 4, 0, RenderTextureFormat.ARGB32);
+                probe.Create();
+                DW_Init(probe.GetNativeTexturePtr());
+                probe.Release();
+            }
+
+            [DllImport("DW_DLSS_N.dll")] static extern void DW_Release();
+            void OnDestroy() => DW_Release(); // 最後に呼び出される関数
 
             // ─────────────────────────────────────────────────────────────────────
 
@@ -116,38 +124,12 @@ namespace DoronkoWanko_DLSS
                 thread.Start();
             }
         }
-
-        //// shaderPath=nullのときは何も読まない、visible=falseのときは非表示
+        //// shaderPath=nullのときはオーバレイ非表示、C++側でnullか判断する
         //[DllImport("DW_DLSS_N.dll", CharSet = CharSet.Unicode)]
         //static extern void DW_Update(string shaderPath, IntPtr[] textures, [MarshalAs(UnmanagedType.Bool)] bool visible, int w, int h);
 
         //[DllImport("DW_DLSS_N.dll")]
         //static extern void DW_Draw();
-
-        //[DllImport("DW_DLSS_N.dll")]
-        //static extern void DW_Release();
-
-        //[DllImport("comdlg32.dll", CharSet = CharSet.Unicode)]
-        //static extern bool GetOpenFileName(ref OPENFILENAME ofn);
-
-
-        //    };
-
-        //    StartCoroutine(EndOfFrameLoop());
-        //    StartCoroutine(TryAddFeatureDelayed());
-        //}
-
-        //System.Collections.IEnumerator InitAndCleanup()
-        //{
-        //    // UnityのD3D12Resourceポインタを渡してデバイスを共有させる
-        //    var probe = new RenderTexture(4, 4, 0, RenderTextureFormat.ARGB32);
-        //    probe.Create();
-        //    DW_Init(probe.GetNativeTexturePtr());
-        //    yield return null;
-        //    probe.Release();
-        //    Destroy(probe);
-        //}
-
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -155,18 +137,20 @@ namespace DoronkoWanko_DLSS
     [HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
     class ScriptableRenderer_Execute_Patch
     {
+        // ほしいもの: opaque、シャドウ、最終出力、ライティング前、シャドウマップ、法線、深度、モーションベクター、解像度、カメラ位置、
         static readonly string[] rtFields = {
             "m_ActiveCameraColorAttachment",   // rts[0] 最終出力候補
             // ここから下は全部nullった
-            "m_ActiveCameraDepthAttachment",   // rts[1] 深度バッファ
-            "m_CameraDepthAttachment",         // rts[2] 深度バッファ2
-            "m_DepthTexture",                  // rts[3] 深度テクスチャ
-            "m_OpaqueColor",                   // rts[4] Opaque
-            "_CameraDepthTexture",             // rts[5] 深度(Global)
-            "_CameraDepthNormalsTexture",      // rts[6] 法線+深度
-            "_CameraMotionVectorsTexture",     // rts[7] モーションベクター
+            //"m_ActiveCameraDepthAttachment",   // rts[1] 深度バッファ
+            //"m_CameraDepthAttachment",         // rts[2] 深度バッファ2
+            //"m_DepthTexture",                  // rts[3] 深度テクスチャ
+            //"m_OpaqueColor",                   // rts[4] Opaque
+            //"_CameraDepthTexture",             // rts[5] 深度(Global)
+            //"_CameraDepthNormalsTexture",      // rts[6] 法線+深度
+            //"_CameraMotionVectorsTexture",     // rts[7] モーションベクター
             };
 
+        [DllImport("DW_DLSS_N.dll")] static extern void DW_OnUnityRenderEvent(IntPtr texPtr);
         static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
         {
             var cam = renderingData.cameraData.camera;
@@ -182,12 +166,10 @@ namespace DoronkoWanko_DLSS
 
                 if (name.StartsWith("_"))
                 {
-                    // ★ _始まりはShaderGlobal
                     rt = Shader.GetGlobalTexture(name) as RenderTexture;
                 }
                 else
                 {
-                    // ★ それ以外はReflectionでRenderTargetHandleから取る
                     var handle = renderer.GetType().GetField(name, flags)?.GetValue(renderer);
                     if (handle != null)
                     {
@@ -201,20 +183,20 @@ namespace DoronkoWanko_DLSS
                     ? $"rts[{i}] {name,-40} = {rt.width}x{rt.height} {rt.graphicsFormat}"
                     : $"rts[{i}] {name,-40} = null");
             }
+
+            // ★ ここで最終カラーをネイティブに渡す
+            var finalRT = Plugin.dlss.rts[0];
+            if (finalRT != null)
+            {
+                DW_OnUnityRenderEvent(finalRT.GetNativeTexturePtr());
+            }
+            Plugin.Log.LogInfo($"Postfix called for camera: {cam.name}, finalRT={(finalRT != null)}");
+
         }
+
     }
-
-
-
-
 }
-
-
-
-
-
-
-//opaque、シャドウ、最終出力、ライティング前、シャドウマップ、法線、深度、モーションベクター、解像度、カメラ位置、
+//
 //static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
 //{
 //    var cam = renderingData.cameraData.camera;
