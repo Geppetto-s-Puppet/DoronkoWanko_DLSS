@@ -1,21 +1,25 @@
 ﻿using BepInEx;
 using BepInEx.Logging;
+using HarmonyLib;
 using System;
 using System.Runtime.InteropServices;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 
 // ─────────────────────────────────────────────────────────────────────
 
 namespace DoronkoWanko_DLSS
 {
-    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "2.0.2")]
+    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "2.0.3")]
     public class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
         void Awake()
         {
             SceneManager.sceneLoaded += OnSceneLoaded;
+            new Harmony("com.alex.doronkowankodlss").PatchAll();
             (Log = Logger).LogInfo("Plugin loaded successfully!");
         }
 
@@ -28,7 +32,12 @@ namespace DoronkoWanko_DLSS
             {
                 if (cam.name == "Main Camera") dlss.mainCamera = cam;
                 else if (cam.name == "UI Camera") dlss.uiCamera = cam;
-                Log.LogInfo($"Scanned: {scene.name}/{cam.name}({cam.depth})");
+                Log.LogInfo($"Scanned: {scene.name}/{cam.name}({cam.depth})" +
+                    $", clearFlags: {cam.clearFlags}" +
+                    $",cullingMask: {cam.cullingMask}" +
+                    $", targetTexture: {cam.targetTexture}" +
+                    $", renderPath: {cam.actualRenderingPath}" +
+                    $", pipeline: {UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline.GetType()}");
             }
         }
 
@@ -40,13 +49,15 @@ namespace DoronkoWanko_DLSS
             internal Camera uiCamera, mainCamera; // UIにはシェーダーを適用しない
             private static string shaderPath; // フォルダのパスだけを渡してC++側で読込
             private static bool uKeyWasDown, rKeyWasDown; // UIトグル(U)とシェーダー読込(R)
+            internal RenderTexture[] rts = new RenderTexture[8]; // シェーダーに渡すテクスチャ
 
             [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
             void Update() { if (!Application.isFocused) return; HandleHotkeyInputs(); }
 
-            // デバッグ用
-            void OnDisable() => Plugin.Log.LogInfo("ありえないからねこれありえないからねこれありえないからねこれありえないからねこれ");
-            void OnDestroy() => Plugin.Log.LogInfo("ありえないからねこれありえないからねこれありえないからねこれありえないからねこれ");
+            //[DllImport("DW_DLSS_N.dll")] static extern void DW_Release();
+            //void OnDestroy() => DW_Release(); // 終了して最後に呼び出される関数
+            //[DllImport("DW_DLSS_N.dll")] static extern void DW_Init();
+            //void Start() => DW_Init(); // ダミーテクスチャを渡してデバイス同期させたい
 
             // ─────────────────────────────────────────────────────────────────────
 
@@ -60,8 +71,6 @@ namespace DoronkoWanko_DLSS
                 if (rDown && !rKeyWasDown) { shaderPath = null; BrowseShaderFolderAsync(); }
                 rKeyWasDown = rDown;
             }
-
-            // ─────────────────────────────────────────────────────────────────────
 
             private static readonly string pluginDir = System.IO.Path.Combine(
                 AppDomain.CurrentDomain.BaseDirectory, "BepInEx", "plugins");
@@ -106,15 +115,7 @@ namespace DoronkoWanko_DLSS
                 thread.IsBackground = true;
                 thread.Start();
             }
-
-
-
-
-
         }
-
-        //[DllImport("DW_DLSS_N.dll")]
-        //static extern void DW_Init(IntPtr sampleResourcePtr);
 
         //// shaderPath=nullのときは何も読まない、visible=falseのときは非表示
         //[DllImport("DW_DLSS_N.dll", CharSet = CharSet.Unicode)]
@@ -128,46 +129,6 @@ namespace DoronkoWanko_DLSS
 
         //[DllImport("comdlg32.dll", CharSet = CharSet.Unicode)]
         //static extern bool GetOpenFileName(ref OPENFILENAME ofn);
-
-        //[DllImport("user32.dll")]
-        //static extern short GetAsyncKeyState(int vKey);
-
-        //[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        //struct OPENFILENAME
-        //{
-        //    public int lStructSize;
-        //    public IntPtr hwndOwner, hInstance;
-        //    public string lpstrFilter, lpstrCustomFilter;
-        //    public int nMaxCustFilter, nFilterIndex;
-        //    public string lpstrFile;
-        //    public int nMaxFile;
-        //    public string lpstrFileTitle;
-        //    public int nMaxFileTitle;
-        //    public string lpstrInitialDir, lpstrTitle;
-        //    public int Flags;
-        //    public short nFileOffset, nFileExtension;
-        //    public string lpstrDefExt;
-        //    public IntPtr lCustData, lpfnHook;
-        //    public string lpTemplateName;
-        //}
-
-        //void Awake()
-        //{
-        //    StartCoroutine(InitAndCleanup());
-
-        //    CapturePass.OnCapture = (colorPtr, depthPtr, normalPtr, motionPtr, shadowPtr, shadowAddPtr, opaquePtr, ssaoPtr, w, h) =>
-        //    {
-        //        //var ptrs = new IntPtr[8] { colorPtr, depthPtr, normalPtr, motionPtr, shadowPtr, shadowAddPtr, opaquePtr, ssaoPtr };
-        //        bool visible = Application.isFocused && shaderPath != null;
-        //        //DW_Update(shaderPath, new IntPtr[8], visible, w, h);
-        //        //DW_Update(shaderPath, ptrs, visible, w, h);
-
-        //        var ptrs = new IntPtr[8];
-        //        ptrs[0] = colorPtr;
-        //        ptrs[1] = depthPtr;
-        //        ptrs[2] = normalPtr;
-        //        //ptrs[3] = motionPtr;
-        //        DW_Update(shaderPath, ptrs, visible, w, h);
 
 
         //    };
@@ -187,16 +148,91 @@ namespace DoronkoWanko_DLSS
         //    Destroy(probe);
         //}
 
+    }
 
+    // ─────────────────────────────────────────────────────────────────────
 
+    [HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
+    class ScriptableRenderer_Execute_Patch
+    {
+        static readonly string[] rtFields = {
+            "m_ActiveCameraColorAttachment",   // rts[0] 最終出力候補
+            // ここから下は全部nullった
+            "m_ActiveCameraDepthAttachment",   // rts[1] 深度バッファ
+            "m_CameraDepthAttachment",         // rts[2] 深度バッファ2
+            "m_DepthTexture",                  // rts[3] 深度テクスチャ
+            "m_OpaqueColor",                   // rts[4] Opaque
+            "_CameraDepthTexture",             // rts[5] 深度(Global)
+            "_CameraDepthNormalsTexture",      // rts[6] 法線+深度
+            "_CameraMotionVectorsTexture",     // rts[7] モーションベクター
+            };
 
-        //void OnDestroy() => DW_Release();
+        static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
+        {
+            var cam = renderingData.cameraData.camera;
+            if (cam.name != "Main Camera") return;
 
+            var renderer = renderingData.cameraData.renderer;
+            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
 
+            for (int i = 0; i < rtFields.Length; i++)
+            {
+                var name = rtFields[i];
+                RenderTexture rt = null;
+
+                if (name.StartsWith("_"))
+                {
+                    // ★ _始まりはShaderGlobal
+                    rt = Shader.GetGlobalTexture(name) as RenderTexture;
+                }
+                else
+                {
+                    // ★ それ以外はReflectionでRenderTargetHandleから取る
+                    var handle = renderer.GetType().GetField(name, flags)?.GetValue(renderer);
+                    if (handle != null)
+                    {
+                        var id = (int)handle.GetType().GetProperty("id")?.GetValue(handle);
+                        rt = Shader.GetGlobalTexture(id) as RenderTexture;
+                    }
+                }
+
+                Plugin.dlss.rts[i] = rt;
+                Plugin.Log.LogInfo(rt != null
+                    ? $"rts[{i}] {name,-40} = {rt.width}x{rt.height} {rt.graphicsFormat}"
+                    : $"rts[{i}] {name,-40} = null");
+            }
+        }
     }
 
 
 
-    // ────────────────────────────────────────────────────────────────────
 
 }
+
+
+
+
+
+
+//opaque、シャドウ、最終出力、ライティング前、シャドウマップ、法線、深度、モーションベクター、解像度、カメラ位置、
+//static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
+//{
+//    var cam = renderingData.cameraData.camera;
+//    if (cam.name != "Main Camera") return;
+
+//    // ★ UniversalRendererの内部フィールドをReflectionで全列挙。何が取れるか確認するため
+//    var renderer = renderingData.cameraData.renderer;
+//    var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+//    foreach (var field in renderer.GetType().GetFields(flags))
+//    {
+//        if (field.Name.ToLower().Contains("color") ||
+//            field.Name.ToLower().Contains("depth") ||
+//            field.Name.ToLower().Contains("attach") ||
+//            field.Name.ToLower().Contains("target"))
+//        {
+//            var val = field.GetValue(renderer);
+//            Plugin.Log.LogInfo($"[Field] {field.Name} = {val?.GetType().Name} : {val}");
+//        }
+//    }
+//    Plugin.Log.LogInfo($" --------------------------------------------------------- ");
+//}
