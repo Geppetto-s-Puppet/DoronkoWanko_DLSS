@@ -18,13 +18,20 @@ namespace DoronkoWanko_DLSS
         internal static ManualLogSource Log;
         void Awake()
         {
+            QualitySettings.vSyncCount = 0;
             SceneManager.sceneLoaded += OnSceneLoaded;
             new Harmony("com.alex.doronkowankodlss").PatchAll();
+
             (Log = Logger).LogInfo("Plugin loaded successfully!");
+            Log.LogInfo(
+                $"Graphics: {SystemInfo.graphicsDeviceType}" +
+                $"Version : {UnityEngine.Application.unityVersion}" +
+                $"Pipeline: {UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline.GetType()}"
+            );
         }
 
         internal static DW_DLSS dlss;
-        void OnSceneLoaded(Scene scene, LoadSceneMode mode) // ゲームのクリーンアップ後に発火させる
+        void OnSceneLoaded(Scene scene, LoadSceneMode mode) // ゲームのクリーンアップ後に発火させないと
         {
             if (dlss == null) { DontDestroyOnLoad(dlss = new GameObject("DW_DLSS").AddComponent<DW_DLSS>()); }
 
@@ -32,42 +39,32 @@ namespace DoronkoWanko_DLSS
             {
                 if (cam.name == "Main Camera") dlss.mainCamera = cam;
                 else if (cam.name == "UI Camera") dlss.uiCamera = cam;
-                Log.LogInfo($"Scanned: {scene.name}/{cam.name}({cam.depth})" +
-                    $", clearFlags: {cam.clearFlags}" +
-                    $",cullingMask: {cam.cullingMask}" +
-                    $", targetTexture: {cam.targetTexture}" +
-                    $", renderPath: {cam.actualRenderingPath}" +
-                    $", pipeline: {UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline.GetType()}");
+                Log.LogInfo($"Scanned: {scene.name}/{cam.name}({cam.depth},{cam.actualRenderingPath})");
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
+        // ──────────────────────────────────────────────────────────────────
 
         internal class DW_DLSS : MonoBehaviour
         {
-
-            internal Camera uiCamera, mainCamera; // UIにはシェーダーを適用しない
-            private static string shaderPath; // フォルダのパスだけを渡してC++側で読込
-            private static bool uKeyWasDown, rKeyWasDown; // UIトグル(U)とシェーダー読込(R)
-            internal RenderTexture[] rts = new RenderTexture[8]; // シェーダーに渡すテクスチャ
+            internal static string shaderPath;                   // ファイルパスだけを渡す
+            internal Camera uiCamera, mainCamera;                // UIにはシェーダーを適用しない
+            internal static bool uKeyWasDown, rKeyWasDown;       // UIトグル(U)とシェーダー読込(R)
 
             [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
-            void Update() { if (!Application.isFocused) return; HandleHotkeyInputs(); }
-
+            void Update() { if (!UnityEngine.Application.isFocused) return; HandleHotkeyInputs(); }
 
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Init(IntPtr probeTexture);
-            void Start() // C#側でUnityのダミーテクスチャを渡し、C++側でそれを逆引きしてデバイスを同期させる
+            void Start() // C#→C++ ダミーテクスチャを渡して、逆引きでUnityデバイスと同期
             {
                 var probe = new RenderTexture(4, 4, 0, RenderTextureFormat.ARGB32);
-                probe.Create();
-                DW_Init(probe.GetNativeTexturePtr());
-                probe.Release();
+                probe.Create(); DW_Init(probe.GetNativeTexturePtr()); probe.Release();
             }
 
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Release();
-            void OnDestroy() => DW_Release(); // 最後に呼び出される関数
+            void OnDestroy() => DW_Release();
 
-            // ─────────────────────────────────────────────────────────────────────
+            // ────────────────────────────────────────────────────────────────
 
             void HandleHotkeyInputs()
             {
@@ -117,104 +114,107 @@ namespace DoronkoWanko_DLSS
                         lpstrTitle = "Choose the shader",
                         Flags = 0x00001000,
                     };
-                    if (GetOpenFileName(ref ofn)) { shaderPath = ofn.lpstrFile; Log.LogInfo($"chose: {shaderPath}"); }
+                    if (GetOpenFileName(ref ofn)) Log.LogInfo($"chose: {shaderPath = ofn.lpstrFile}");
+
                 });
                 thread.SetApartmentState(System.Threading.ApartmentState.STA);
                 thread.IsBackground = true;
                 thread.Start();
             }
         }
-        //// shaderPath=nullのときはオーバレイ非表示、C++側でnullか判断する
-        //[DllImport("DW_DLSS_N.dll", CharSet = CharSet.Unicode)]
-        //static extern void DW_Update(string shaderPath, IntPtr[] textures, [MarshalAs(UnmanagedType.Bool)] bool visible, int w, int h);
-
-        //[DllImport("DW_DLSS_N.dll")]
-        //static extern void DW_Draw();
     }
 
-    // ─────────────────────────────────────────────────────────────────────
+    // ────────────────────────────────────────────────────────────────────
 
     [HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
     class ScriptableRenderer_Execute_Patch
     {
-        // ほしいもの: opaque、シャドウ、最終出力、ライティング前、シャドウマップ、法線、深度、モーションベクター、解像度、カメラ位置、
-        static readonly string[] rtFields = {
-            "m_ActiveCameraColorAttachment",   // rts[0] 最終出力候補
-            // ここから下は全部nullった
-            //"m_ActiveCameraDepthAttachment",   // rts[1] 深度バッファ
-            //"m_CameraDepthAttachment",         // rts[2] 深度バッファ2
-            //"m_DepthTexture",                  // rts[3] 深度テクスチャ
-            //"m_OpaqueColor",                   // rts[4] Opaque
-            //"_CameraDepthTexture",             // rts[5] 深度(Global)
-            //"_CameraDepthNormalsTexture",      // rts[6] 法線+深度
-            //"_CameraMotionVectorsTexture",     // rts[7] モーションベクター
-            };
+        static bool s_initialized = false;
+        static readonly (string name, int id)[] s_rtList = new[] {
+            ("Color",         Shader.PropertyToID("_CameraColorTexture")),               // [0] 颜色
+            ("Opaque",        Shader.PropertyToID("_CameraOpaqueTexture")),              // [1] 不透
+            ("Depth",         Shader.PropertyToID("_CameraDepthTexture")),               // [2] 深度
+            ("Normals",       Shader.PropertyToID("_CameraNormalsTexture")),             // [3] 法线
+            ("SSAO",          Shader.PropertyToID("_ScreenSpaceAOTexture")),             // [4] 环遮
+            ("MotionVectors", Shader.PropertyToID("_CameraMotionVectorsTexture")),       // [5] 运动
+            ("MainShadow",    Shader.PropertyToID("_MainLightShadowmapTexture")),        // [6] 阴影
+            ("AddShadow",     Shader.PropertyToID("_AdditionalLightsShadowmapTexture")), // [7] 附影
+            // SRVの上限が8個なので、これより下はスキャン専用
+        };
 
-        [DllImport("DW_DLSS_N.dll")] static extern void DW_OnUnityRenderEvent(IntPtr texPtr);
+        [DllImport("DW_DLSS_N.dll")] static extern void DW_Update(IntPtr[] texPtrs, int count);
         static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
         {
             var cam = renderingData.cameraData.camera;
-            if (cam.name != "Main Camera") return;
+            if (cam != Plugin.dlss.mainCamera) return;
+            Plugin.Log.LogInfo("========================");
+            cam.depthTextureMode |= DepthTextureMode.Depth;
 
-            var renderer = renderingData.cameraData.renderer;
-            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
-
-            for (int i = 0; i < rtFields.Length; i++)
+            if (!s_initialized)
             {
-                var name = rtFields[i];
-                RenderTexture rt = null;
+                s_initialized = true;
 
-                if (name.StartsWith("_"))
-                {
-                    rt = Shader.GetGlobalTexture(name) as RenderTexture;
-                }
-                else
-                {
-                    var handle = renderer.GetType().GetField(name, flags)?.GetValue(renderer);
-                    if (handle != null)
-                    {
-                        var id = (int)handle.GetType().GetProperty("id")?.GetValue(handle);
-                        rt = Shader.GetGlobalTexture(id) as RenderTexture;
-                    }
-                }
 
-                Plugin.dlss.rts[i] = rt;
-                Plugin.Log.LogInfo(rt != null
-                    ? $"rts[{i}] {name,-40} = {rt.width}x{rt.height} {rt.graphicsFormat}"
-                    : $"rts[{i}] {name,-40} = null");
+                //// ここでなんとかしてOpaque、法線、モーションベクターを有効化したい
+
+                //try
+                //{
+                //    var pl = GraphicsSettings.currentRenderPipeline;
+                //    if (pl == null) return;
+                //    var bf = BindingFlags.NonPublic | BindingFlags.Instance;
+                //    var type = pl.GetType();
+
+                //    // Opaque有効化
+                //    var fi = type.GetField("m_RequireOpaqueTexture", bf);
+                //    if (fi?.FieldType == typeof(bool)) fi.SetValue(pl, true);
+
+                //    // bool型でopaque/normal/depth/motionを含むフィールドを全部trueに
+                //    foreach (var f in type.GetFields(bf))
+                //    {
+                //        if (f.FieldType != typeof(bool)) continue;
+                //        string n = f.Name.ToLower();
+                //        if (n.Contains("opaque") || n.Contains("normal") ||
+                //            n.Contains("depth") || n.Contains("motion"))
+                //        {
+                //            if (!(bool)f.GetValue(pl))
+                //            {
+                //                f.SetValue(pl, true);
+                //                Plugin.Log.LogInfo($"[URP] {f.Name}: false → true");
+                //            }
+                //        }
+                //    }
+                //}
+                //catch (Exception e) { Plugin.Log.LogWarning($"[Patch] URP patch: {e.Message}"); }
+
+                //cam.depthTextureMode |=
+                //    DepthTextureMode.Depth |
+                //    DepthTextureMode.DepthNormals |
+                //    DepthTextureMode.MotionVectors;
             }
 
-            // ★ ここで最終カラーをネイティブに渡す
-            var finalRT = Plugin.dlss.rts[0];
-            if (finalRT != null)
+            IntPtr[] rtPtrs = new IntPtr[s_rtList.Length];
+            for (int i = 0; i < s_rtList.Length; i++)
             {
-                DW_OnUnityRenderEvent(finalRT.GetNativeTexturePtr());
+                var tex = Shader.GetGlobalTexture(s_rtList[i].id) as RenderTexture;
+                if (tex != null && tex.IsCreated()) rtPtrs[i] = tex.GetNativeTexturePtr();
+                Plugin.Log.LogInfo($"RenderTarget{i}: {s_rtList[i].name,-12} = {rtPtrs[i]} {tex?.width}x{tex?.height}");
+                // {tex?.format}はあくまでUnityのEnumだから、実際のDX12フォーマットはID3D12Resource*からGetDesc().Formatしてね
             }
-            Plugin.Log.LogInfo($"Postfix called for camera: {cam.name}, finalRT={(finalRT != null)}");
+
+            DW_Update(rtPtrs, 8);
 
         }
-
     }
 }
-//
-//static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
-//{
-//    var cam = renderingData.cameraData.camera;
-//    if (cam.name != "Main Camera") return;
 
-//    // ★ UniversalRendererの内部フィールドをReflectionで全列挙。何が取れるか確認するため
-//    var renderer = renderingData.cameraData.renderer;
-//    var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
-//    foreach (var field in renderer.GetType().GetFields(flags))
-//    {
-//        if (field.Name.ToLower().Contains("color") ||
-//            field.Name.ToLower().Contains("depth") ||
-//            field.Name.ToLower().Contains("attach") ||
-//            field.Name.ToLower().Contains("target"))
-//        {
-//            var val = field.GetValue(renderer);
-//            Plugin.Log.LogInfo($"[Field] {field.Name} = {val?.GetType().Name} : {val}");
-//        }
-//    }
-//    Plugin.Log.LogInfo($" --------------------------------------------------------- ");
-//}
+
+
+
+// ここから下は全部nullった
+//"m_ActiveCameraDepthAttachment",   // rts[1] 深度バッファ
+//"m_CameraDepthAttachment",         // rts[2] 深度バッファ2
+//"m_DepthTexture",                  // rts[3] 深度テクスチャ
+//"m_OpaqueColor",                   // rts[4] Opaque
+//"_CameraDepthTexture",             // rts[5] 深度(Global)
+//"",      // rts[6] 法線+深度
+//"_CameraMotionVectorsTexture",     // rts[7] モーションベクター
