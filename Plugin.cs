@@ -126,6 +126,10 @@ namespace DoronkoWanko_DLSS
 
     // ────────────────────────────────────────────────────────────────────
 
+
+
+    // ────────────────────────────────────────────────────────────────────
+
     [HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
     class ScriptableRenderer_Execute_Patch
     {
@@ -148,48 +152,19 @@ namespace DoronkoWanko_DLSS
             var cam = renderingData.cameraData.camera;
             if (cam != Plugin.dlss.mainCamera) return;
             Plugin.Log.LogInfo("========================");
-            cam.depthTextureMode |= DepthTextureMode.Depth;
 
-            if (!s_initialized)
+            if (!s_initialized) // ここでなんとかしてOpaque、法線、モーションベクターを有効化したい
             {
                 s_initialized = true;
 
+                //var rp = GraphicsSettings.currentRenderPipeline;
+                //var bf = BindingFlags.NonPublic | BindingFlags.Instance;
+                //rp.GetType().GetField("m_RequireOpaqueTexture", bf)?.SetValue(rp, true);
+                //↑こいつだけやる意味ある
 
-                //// ここでなんとかしてOpaque、法線、モーションベクターを有効化したい
+                //rp.GetType().GetField("m_RequiresMotionVectors", bf)?.SetValue(rp, true);
+                //これは書いても無駄だった
 
-                //try
-                //{
-                //    var pl = GraphicsSettings.currentRenderPipeline;
-                //    if (pl == null) return;
-                //    var bf = BindingFlags.NonPublic | BindingFlags.Instance;
-                //    var type = pl.GetType();
-
-                //    // Opaque有効化
-                //    var fi = type.GetField("m_RequireOpaqueTexture", bf);
-                //    if (fi?.FieldType == typeof(bool)) fi.SetValue(pl, true);
-
-                //    // bool型でopaque/normal/depth/motionを含むフィールドを全部trueに
-                //    foreach (var f in type.GetFields(bf))
-                //    {
-                //        if (f.FieldType != typeof(bool)) continue;
-                //        string n = f.Name.ToLower();
-                //        if (n.Contains("opaque") || n.Contains("normal") ||
-                //            n.Contains("depth") || n.Contains("motion"))
-                //        {
-                //            if (!(bool)f.GetValue(pl))
-                //            {
-                //                f.SetValue(pl, true);
-                //                Plugin.Log.LogInfo($"[URP] {f.Name}: false → true");
-                //            }
-                //        }
-                //    }
-                //}
-                //catch (Exception e) { Plugin.Log.LogWarning($"[Patch] URP patch: {e.Message}"); }
-
-                //cam.depthTextureMode |=
-                //    DepthTextureMode.Depth |
-                //    DepthTextureMode.DepthNormals |
-                //    DepthTextureMode.MotionVectors;
             }
 
             IntPtr[] rtPtrs = new IntPtr[s_rtList.Length];
@@ -197,7 +172,7 @@ namespace DoronkoWanko_DLSS
             {
                 var tex = Shader.GetGlobalTexture(s_rtList[i].id) as RenderTexture;
                 if (tex != null && tex.IsCreated()) rtPtrs[i] = tex.GetNativeTexturePtr();
-                Plugin.Log.LogInfo($"RenderTarget{i}: {s_rtList[i].name,-12} = {rtPtrs[i]} {tex?.width}x{tex?.height}");
+                Plugin.Log.LogInfo($"RenderTarget{i}: &{s_rtList[i].name,-12} *{rtPtrs[i]} ({tex?.width}x{tex?.height})");
                 // {tex?.format}はあくまでUnityのEnumだから、実際のDX12フォーマットはID3D12Resource*からGetDesc().Formatしてね
             }
 
@@ -210,11 +185,59 @@ namespace DoronkoWanko_DLSS
 
 
 
-// ここから下は全部nullった
-//"m_ActiveCameraDepthAttachment",   // rts[1] 深度バッファ
-//"m_CameraDepthAttachment",         // rts[2] 深度バッファ2
-//"m_DepthTexture",                  // rts[3] 深度テクスチャ
-//"m_OpaqueColor",                   // rts[4] Opaque
-//"_CameraDepthTexture",             // rts[5] 深度(Global)
-//"",      // rts[6] 法線+深度
-//"_CameraMotionVectorsTexture",     // rts[7] モーションベクター
+
+
+
+
+
+
+//[HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
+//class ScriptableRenderer_Execute_Patch
+//{
+//    static bool s_initialized = false;
+//    static readonly (string name, int id)[] s_rtList = new[] {
+//            ("Color",         Shader.PropertyToID("_CameraColorTexture")),               // [0] 颜色
+//            ("Opaque",        Shader.PropertyToID("_CameraOpaqueTexture")),              // [1] 不透
+//            ("Depth",         Shader.PropertyToID("_CameraDepthTexture")),               // [2] 深度
+//            ("Normals",       Shader.PropertyToID("_CameraNormalsTexture")),             // [3] 法线
+//            ("SSAO",          Shader.PropertyToID("_ScreenSpaceAOTexture")),             // [4] 环遮
+//            ("MotionVectors", Shader.PropertyToID("_CameraMotionVectorsTexture")),       // [5] 运动
+//            ("MainShadow",    Shader.PropertyToID("_MainLightShadowmapTexture")),        // [6] 阴影
+//            ("AddShadow",     Shader.PropertyToID("_AdditionalLightsShadowmapTexture")), // [7] 附影
+//            // SRVの上限が8個なので、これより下はスキャン専用
+//        };
+
+//    [DllImport("DW_DLSS_N.dll")] static extern void DW_Update(IntPtr[] texPtrs, int count);
+//    static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
+//    {
+//        var cam = renderingData.cameraData.camera;
+//        if (cam != Plugin.dlss.mainCamera) return;
+//        Plugin.Log.LogInfo("========================");
+
+//        if (!s_initialized) // ここでなんとかしてOpaque、法線、モーションベクターを有効化したい
+//        {
+//            s_initialized = true;
+
+//            //var rp = GraphicsSettings.currentRenderPipeline;
+//            //var bf = BindingFlags.NonPublic | BindingFlags.Instance;
+//            //rp.GetType().GetField("m_RequireOpaqueTexture", bf)?.SetValue(rp, true);
+//            //↑こいつだけやる意味ある
+
+//            //rp.GetType().GetField("m_RequiresMotionVectors", bf)?.SetValue(rp, true);
+//            //これは書いても無駄だった
+
+//        }
+
+//        IntPtr[] rtPtrs = new IntPtr[s_rtList.Length];
+//        for (int i = 0; i < s_rtList.Length; i++)
+//        {
+//            var tex = Shader.GetGlobalTexture(s_rtList[i].id) as RenderTexture;
+//            if (tex != null && tex.IsCreated()) rtPtrs[i] = tex.GetNativeTexturePtr();
+//            Plugin.Log.LogInfo($"RenderTarget{i}: &{s_rtList[i].name,-12} *{rtPtrs[i]} ({tex?.width}x{tex?.height})");
+//            // {tex?.format}はあくまでUnityのEnumだから、実際のDX12フォーマットはID3D12Resource*からGetDesc().Formatしてね
+//        }
+
+//        DW_Update(rtPtrs, 8);
+
+//    }
+//}
