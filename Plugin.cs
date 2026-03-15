@@ -2,6 +2,7 @@
 using BepInEx.Logging;
 using HarmonyLib;
 using System;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -12,7 +13,7 @@ using UnityEngine.SceneManagement;
 
 namespace DoronkoWanko_DLSS
 {
-    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "2.0.3")]
+    [BepInPlugin("com.alex.doronkowankodlss", "DoronkoWanko DLSS", "2.1.0")]
     public class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
@@ -62,7 +63,7 @@ namespace DoronkoWanko_DLSS
             }
 
             [DllImport("DW_DLSS_N.dll")] static extern void DW_Release();
-            void OnDestroy() => DW_Release();
+            void OnDestroy() => DW_Release(); // 一番最後に呼ばれてる関数
 
             // ────────────────────────────────────────────────────────────────
 
@@ -126,10 +127,6 @@ namespace DoronkoWanko_DLSS
 
     // ────────────────────────────────────────────────────────────────────
 
-
-
-    // ────────────────────────────────────────────────────────────────────
-
     [HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
     class ScriptableRenderer_Execute_Patch
     {
@@ -156,15 +153,10 @@ namespace DoronkoWanko_DLSS
             if (!s_initialized) // ここでなんとかしてOpaque、法線、モーションベクターを有効化したい
             {
                 s_initialized = true;
-
-                //var rp = GraphicsSettings.currentRenderPipeline;
-                //var bf = BindingFlags.NonPublic | BindingFlags.Instance;
-                //rp.GetType().GetField("m_RequireOpaqueTexture", bf)?.SetValue(rp, true);
-                //↑こいつだけやる意味ある
-
-                //rp.GetType().GetField("m_RequiresMotionVectors", bf)?.SetValue(rp, true);
-                //これは書いても無駄だった
-
+                var rp = GraphicsSettings.currentRenderPipeline;
+                var bf = BindingFlags.NonPublic | BindingFlags.Instance;
+                rp.GetType().GetField("m_RequireOpaqueTexture", bf)?.SetValue(rp, true); // これは有効化される
+                rp.GetType().GetField("m_RequiresMotionVectors", bf)?.SetValue(rp, true); // これは有効化されない
             }
 
             IntPtr[] rtPtrs = new IntPtr[s_rtList.Length];
@@ -181,63 +173,3 @@ namespace DoronkoWanko_DLSS
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-//[HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
-//class ScriptableRenderer_Execute_Patch
-//{
-//    static bool s_initialized = false;
-//    static readonly (string name, int id)[] s_rtList = new[] {
-//            ("Color",         Shader.PropertyToID("_CameraColorTexture")),               // [0] 颜色
-//            ("Opaque",        Shader.PropertyToID("_CameraOpaqueTexture")),              // [1] 不透
-//            ("Depth",         Shader.PropertyToID("_CameraDepthTexture")),               // [2] 深度
-//            ("Normals",       Shader.PropertyToID("_CameraNormalsTexture")),             // [3] 法线
-//            ("SSAO",          Shader.PropertyToID("_ScreenSpaceAOTexture")),             // [4] 环遮
-//            ("MotionVectors", Shader.PropertyToID("_CameraMotionVectorsTexture")),       // [5] 运动
-//            ("MainShadow",    Shader.PropertyToID("_MainLightShadowmapTexture")),        // [6] 阴影
-//            ("AddShadow",     Shader.PropertyToID("_AdditionalLightsShadowmapTexture")), // [7] 附影
-//            // SRVの上限が8個なので、これより下はスキャン専用
-//        };
-
-//    [DllImport("DW_DLSS_N.dll")] static extern void DW_Update(IntPtr[] texPtrs, int count);
-//    static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
-//    {
-//        var cam = renderingData.cameraData.camera;
-//        if (cam != Plugin.dlss.mainCamera) return;
-//        Plugin.Log.LogInfo("========================");
-
-//        if (!s_initialized) // ここでなんとかしてOpaque、法線、モーションベクターを有効化したい
-//        {
-//            s_initialized = true;
-
-//            //var rp = GraphicsSettings.currentRenderPipeline;
-//            //var bf = BindingFlags.NonPublic | BindingFlags.Instance;
-//            //rp.GetType().GetField("m_RequireOpaqueTexture", bf)?.SetValue(rp, true);
-//            //↑こいつだけやる意味ある
-
-//            //rp.GetType().GetField("m_RequiresMotionVectors", bf)?.SetValue(rp, true);
-//            //これは書いても無駄だった
-
-//        }
-
-//        IntPtr[] rtPtrs = new IntPtr[s_rtList.Length];
-//        for (int i = 0; i < s_rtList.Length; i++)
-//        {
-//            var tex = Shader.GetGlobalTexture(s_rtList[i].id) as RenderTexture;
-//            if (tex != null && tex.IsCreated()) rtPtrs[i] = tex.GetNativeTexturePtr();
-//            Plugin.Log.LogInfo($"RenderTarget{i}: &{s_rtList[i].name,-12} *{rtPtrs[i]} ({tex?.width}x{tex?.height})");
-//            // {tex?.format}はあくまでUnityのEnumだから、実際のDX12フォーマットはID3D12Resource*からGetDesc().Formatしてね
-//        }
-
-//        DW_Update(rtPtrs, 8);
-
-//    }
-//}
