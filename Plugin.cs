@@ -2,6 +2,7 @@
 using BepInEx.Logging;
 using HarmonyLib;
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using UnityEngine;
@@ -48,9 +49,9 @@ namespace DoronkoWanko_DLSS
 
         internal class DW_DLSS : MonoBehaviour
         {
-            internal static string shaderPath;                   // ファイルパスだけを渡す
-            internal Camera uiCamera, mainCamera;                // UIにはシェーダーを適用しない
-            internal static bool uKeyWasDown, rKeyWasDown;       // UIトグル(U)とシェーダー読込(R)
+            internal static string shaderPath;             // ファイルパスだけを渡す
+            internal Camera uiCamera, mainCamera;          // UIにはシェーダーを適用しない
+            internal static bool uKeyWasDown, rKeyWasDown; // UIトグル(U)とシェーダー読込(R)
 
             [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
             void Update() { if (!UnityEngine.Application.isFocused) return; HandleHotkeyInputs(); }
@@ -127,36 +128,62 @@ namespace DoronkoWanko_DLSS
 
     // ────────────────────────────────────────────────────────────────────
 
+    public class FeatureRequester : ScriptableRendererFeature
+    {
+        class DummyPass : ScriptableRenderPass
+        {
+            public DummyPass() => ConfigureInput(ScriptableRenderPassInput.Depth
+                                               | ScriptableRenderPassInput.Normal
+                                               | ScriptableRenderPassInput.Motion);
+            public override void Execute(ScriptableRenderContext ctx, ref RenderingData rd) { }
+        }
+        DummyPass _pass;
+        public override void Create() => _pass = new DummyPass { renderPassEvent = RenderPassEvent.BeforeRendering };
+        public override void AddRenderPasses(ScriptableRenderer r, ref RenderingData rd) => r.EnqueuePass(_pass);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+
     [HarmonyPatch(typeof(ScriptableRenderer), "Execute")]
     class ScriptableRenderer_Execute_Patch
     {
         static bool s_initialized = false;
         static readonly (string name, int id)[] s_rtList = new[] {
             ("Color",         Shader.PropertyToID("_CameraColorTexture")),               // [0] 颜色
-            ("Opaque",        Shader.PropertyToID("_CameraOpaqueTexture")),              // [1] 不透
-            ("Depth",         Shader.PropertyToID("_CameraDepthTexture")),               // [2] 深度
-            ("Normals",       Shader.PropertyToID("_CameraNormalsTexture")),             // [3] 法线
+            ("Depth",         Shader.PropertyToID("_CameraDepthTexture")),               // [1] 深度
+            ("Opaque",        Shader.PropertyToID("_CameraOpaqueTexture")),              // [2] 不透
+            ("Normal",        Shader.PropertyToID("_CameraNormalsTexture")),             // [3] 法线
             ("SSAO",          Shader.PropertyToID("_ScreenSpaceAOTexture")),             // [4] 环遮
             ("MotionVectors", Shader.PropertyToID("_CameraMotionVectorsTexture")),       // [5] 运动
             ("MainShadow",    Shader.PropertyToID("_MainLightShadowmapTexture")),        // [6] 阴影
             ("AddShadow",     Shader.PropertyToID("_AdditionalLightsShadowmapTexture")), // [7] 附影
-            // SRVの上限が8個なので、これより下はスキャン専用
         };
 
-        [DllImport("DW_DLSS_N.dll")] static extern void DW_Update(IntPtr[] texPtrs, int count);
+        [DllImport("DW_DLSS_N.dll", CharSet = CharSet.Unicode)]
+        static extern void DW_Update(IntPtr[] texPtrs, string shaderPath, float[] constants, int constantCount);
         static void Postfix(ScriptableRenderContext context, ref RenderingData renderingData)
         {
             var cam = renderingData.cameraData.camera;
             if (cam != Plugin.dlss.mainCamera) return;
-            Plugin.Log.LogInfo("========================");
+            Plugin.Log.LogInfo("===================");
 
-            if (!s_initialized) // ここでなんとかしてOpaque、法線、モーションベクターを有効化したい
+            if (!s_initialized)
             {
                 s_initialized = true;
+
+                // Colorのダブルバッファリング対策として、DW_Update()で送られてきたRTは、ネイティブ側でコピーして保持しとくこと
+
+                // Opaque有効化
                 var rp = GraphicsSettings.currentRenderPipeline;
                 var bf = BindingFlags.NonPublic | BindingFlags.Instance;
-                rp.GetType().GetField("m_RequireOpaqueTexture", bf)?.SetValue(rp, true); // これは有効化される
-                rp.GetType().GetField("m_RequiresMotionVectors", bf)?.SetValue(rp, true); // これは有効化されない
+                rp.GetType().GetField("m_OpaqueDownsampling", bf)?.SetValue(rp, 0);
+                rp.GetType().GetField("m_RequireOpaqueTexture", bf)?.SetValue(rp, true);
+
+                // Normals有効化
+                var renderer = (cam.GetUniversalAdditionalCameraData().scriptableRenderer as UniversalRenderer);
+                var featuresField = typeof(ScriptableRenderer).GetField("m_RendererFeatures", BindingFlags.NonPublic | BindingFlags.Instance);
+                var features = featuresField.GetValue(renderer) as List<ScriptableRendererFeature>;
+                features.Add(ScriptableObject.CreateInstance<FeatureRequester>());
             }
 
             IntPtr[] rtPtrs = new IntPtr[s_rtList.Length];
@@ -164,11 +191,27 @@ namespace DoronkoWanko_DLSS
             {
                 var tex = Shader.GetGlobalTexture(s_rtList[i].id) as RenderTexture;
                 if (tex != null && tex.IsCreated()) rtPtrs[i] = tex.GetNativeTexturePtr();
-                Plugin.Log.LogInfo($"RenderTarget{i}: &{s_rtList[i].name,-12} *{rtPtrs[i]} ({tex?.width}x{tex?.height})");
+                Plugin.Log.LogInfo($"RenderTarget{i}: &{s_rtList[i].name,-13} {rtPtrs[i]} ({tex?.width}x{tex?.height})");
                 // {tex?.format}はあくまでUnityのEnumだから、実際のDX12フォーマットはID3D12Resource*からGetDesc().Formatしてね
             }
 
-            DW_Update(rtPtrs, 8);
+            var vm = Plugin.dlss.mainCamera.worldToCameraMatrix;
+            var pm = Plugin.dlss.mainCamera.projectionMatrix;
+            float[] constants = {
+                Time.time,
+                Time.deltaTime,
+                Screen.width, Screen.height,
+                vm.m00, vm.m01, vm.m02, vm.m03,
+                vm.m10, vm.m11, vm.m12, vm.m13,
+                vm.m20, vm.m21, vm.m22, vm.m23,
+                vm.m30, vm.m31, vm.m32, vm.m33,
+                pm.m00, pm.m01, pm.m02, pm.m03,
+                pm.m10, pm.m11, pm.m12, pm.m13,
+                pm.m20, pm.m21, pm.m22, pm.m23,
+                pm.m30, pm.m31, pm.m32, pm.m33,
+            };
+
+            DW_Update(rtPtrs, Plugin.DW_DLSS.shaderPath, constants, constants.Length);
 
         }
     }

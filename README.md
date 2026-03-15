@@ -21,3 +21,15 @@
 - ゲームのログ: `"D:\SteamLibrary\steamapps\common\DoronkoWanko\BepInEx\LogOutput.log"`
 - `GraphicsSettings.currentRenderPipeline.GetType().Name`は`UniversalRenderPipelineAsset`になっている
 - Win32 ウィンドウスタイル `https://learn.microsoft.com/ja-jp/windows/win32/winmsg/extended-window-styles`
+
+どろんこワンコのDX12リソースを解析する図
+<img width="1518" height="811" alt="Image" src="https://github.com/user-attachments/assets/9db8d10b-b7dc-4a0a-bc7b-270203fdd6dc" />
+
+どろんこワンコをdnSpyにかけてデコンパイルする図
+<img width="1511" height="811" alt="Image" src="https://github.com/user-attachments/assets/65a288ea-7e2a-409f-8816-bbb07573b541" />
+<img width="1512" height="810" alt="Image" src="https://github.com/user-attachments/assets/b07cfbc2-5172-437e-a9f2-5b897b922f58" />
+
+どろんこワンコのライティング処理前が怖すぎる図
+<img width="1918" height="1079" alt="Image" src="https://github.com/user-attachments/assets/16d983f1-643a-46d2-bf9b-74ecdba921e3" />
+<img width="964" height="561" alt="Image" src="https://github.com/user-attachments/assets/ad2a4b35-1585-4669-93b6-d2a2553b4751" />
+<img width="1919" height="1079" alt="Image" src="https://github.com/user-attachments/assets/8759c091-d5bd-47d1-bd7f-8563a13eaea6" />
