@@ -2,6 +2,7 @@
 //#include <thread>
 //#include <vector>
 #include <string>
+#include <fstream>
 #include "d3dx12.h"
 #include <dxgi1_6.h>
 #include <windows.h>
@@ -37,36 +38,38 @@ static const char* g_ShaderHelper = R"(
 cbuffer CB0 : register(b0)
 {
     float TIME;
-    float DELTA_TIME;
-    float2 RESOLUTION;
-    float4x4 VIEW_MATRIX;
-    float4x4 PROJ_MATRIX;
+    float DELTA;
+    float2 RES;
+    float4x4 VIEW;
+    float4x4 PROJ;
 }
-
-Texture2D t_Color        : register(t0);
-Texture2D t_Depth        : register(t1);
-Texture2D t_Opaque       : register(t2);
-Texture2D t_Normal       : register(t3);
-Texture2D t_SSAO         : register(t4);
-Texture2D t_MotionVectors: register(t5);
-Texture2D t_MainShadow   : register(t6);
-Texture2D t_AddShadow    : register(t7);
-
-SamplerState s_Linear : register(s0);
+SamplerState smp : register(s0);
+Texture2D tColor   : register(t0);
+Texture2D tDepth   : register(t1);
+Texture2D tOpaque  : register(t2);
+Texture2D tNormal  : register(t3);
+Texture2D tSSAO    : register(t4);
+Texture2D tMotion  : register(t5);
+Texture2D tShadow  : register(t6);
+Texture2D tShadow2 : register(t7);
 
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 VSOut VS(uint id : SV_VertexID)
 {
     VSOut o;
-    o.uv  = float2((id & 1) ? 1 : 0, (id >> 1) ? 1 : 0);
-    o.pos = float4(o.uv * 2 - 1, 0, 1);
-    o.pos.y = -o.pos.y;
+    o.uv  = float2((id & 1) * 2.0, (id >> 1) * 2.0);
+    o.pos = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
     return o;
 }
+
+float4 Main(float2 uv, float4 pos);
+float4 PS(VSOut i) : SV_Target
+{
+    return Main(i.uv, i.pos);
+}
 )";
-
-// ユーティリティ
-
+ComPtr<ID3D12Resource> g_CBuffer;
+void* g_CBufferPtr = nullptr;
 
 // エクスポート
 extern "C"
@@ -188,152 +191,126 @@ extern "C"
 
     __declspec(dllexport) void DW_Update(void** texPtrs, const wchar_t* shaderPath, float* constants, int constantCount)
     {
-        ShowWindow(g_hWnd, shaderPath ? SW_SHOW : SW_HIDE);
-        if (!shaderPath) return;
-
-        printf("shaderPath:%ls g_ShaderPath:%ls\n", shaderPath, g_ShaderPath.c_str());
-
-        if (g_ShaderPath == shaderPath ) return; g_ShaderPath = shaderPath;
-
-
-
-
-
-
-
-
-        // g_ShaderHelper と g_ShaderPath を結合してコンパイルしたい
-        // 1. シェーダーファイルを読み込む
-        FILE* f = _wfopen(shaderPath, L"rb");
-        if (!f) {
-            printf("fopen failed: %ls (errno=%d)\n", shaderPath, errno);
-            return;
-        }
-        fseek(f, 0, SEEK_END);
-        long size = ftell(f);
-        rewind(f);
-        std::string userCode(size, '\0');
-        fread(&userCode[0], 1, size, f); // fread(userCode.data(), 1, size, f); 代わり
-        fclose(f);
-
-        // 2. ヘルパーと結合
-        std::string fullSource = std::string(g_ShaderHelper) + "\n" + userCode;
-
-        // 3. PSコンパイル（VSはヘルパー内にある）
-        ComPtr<ID3DBlob> vsBlob, psBlob, errBlob;
-
-        HRESULT hrVS = D3DCompile(
-            fullSource.c_str(), fullSource.size(),
-            nullptr, nullptr, nullptr,
-            "VS", "vs_5_0",
-            D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
-            &vsBlob, &errBlob);
-        if (FAILED(hrVS)) {
-            printf("VS error: %s\n", (char*)errBlob->GetBufferPointer());
-            return;
+        ShowWindow(g_hWnd, shaderPath ? SW_SHOW : SW_HIDE); // shaderPathがnullならオーバレイ非表示
+        
+        if (shaderPath && g_ShaderPath != shaderPath) { g_ShaderPath = shaderPath;
+            // 動的結合式シェーダーコンパイル
+            std::ifstream f(shaderPath, std::ios::binary);
+            std::string userCode(std::istreambuf_iterator<char>(f), {});
+            std::string fullSource = std::string(g_ShaderHelper) + "\n" + userCode;
+            ComPtr<ID3DBlob> vsBlob, psBlob, errBlob;
+            HRESULT hrVS = D3DCompile( fullSource.c_str(),fullSource.size(),
+                nullptr, nullptr, nullptr, "VS", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsBlob, &errBlob);
+            if (FAILED(hrVS)) { if (errBlob) printf("VS error: %s\n", (char*)errBlob->GetBufferPointer()); return; }
+            HRESULT hrPS = D3DCompile( fullSource.c_str(), fullSource.size(),
+                nullptr, nullptr, nullptr, "PS", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psBlob, &errBlob);
+            if (FAILED(hrPS)) { if (errBlob) printf("PS error: %s\n", (char*)errBlob->GetBufferPointer()); return; }
+            // パイプラインステートオブジェクト再生成
+            g_CommandQueue->Signal(g_Fence.Get(), ++g_FenceValue[g_FrameIndex]);
+            g_Fence->SetEventOnCompletion(g_FenceValue[g_FrameIndex], g_FenceEvent);
+            WaitForSingleObject(g_FenceEvent, INFINITE);
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+            psoDesc.pRootSignature = g_RootSignature.Get();
+            psoDesc.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
+            psoDesc.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
+            psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+            psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+            psoDesc.DepthStencilState.DepthEnable = FALSE;
+            psoDesc.SampleMask = UINT_MAX;
+            psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            psoDesc.NumRenderTargets = 1;
+            psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            psoDesc.SampleDesc = { 1, 0 };
+            ComPtr<ID3D12PipelineState> newPSO; printf("%s\n", fullSource.c_str());
+            if (SUCCEEDED(g_Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&newPSO)))) { g_PSO = newPSO; }
         }
 
-        HRESULT hrPS = D3DCompile(
-            fullSource.c_str(), fullSource.size(),
-            nullptr, nullptr, nullptr,
-            "PS", "ps_5_0",         // ← ユーザーが PS を定義する前提
-            D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
-            &psBlob, &errBlob);
-        if (FAILED(hrPS)) {
-            printf("%s\n", (char*)errBlob->GetBufferPointer());
-            return;
+        // CBV上書き
+        if (!g_CBuffer) {
+            auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+            auto rd = CD3DX12_RESOURCE_DESC::Buffer(256);
+            g_Device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&g_CBuffer));
+            g_CBuffer->Map(0, nullptr, &g_CBufferPtr);
+            D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+            cbvDesc.BufferLocation = g_CBuffer->GetGPUVirtualAddress();
+            cbvDesc.SizeInBytes = 256;
+            g_Device->CreateConstantBufferView(&cbvDesc,
+                g_CbvSrvHeap->GetCPUDescriptorHandleForHeapStart()); // slot 0 = b0
         }
+        memcpy(g_CBufferPtr, constants, sizeof(float) * constantCount);
 
-        // 4. PSO再生成（GPU処理が終わってから差し替える）
-        // ※ 実際はフェンス待ちしてから安全に差し替えること
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.pRootSignature = g_RootSignature.Get();
-        psoDesc.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
-        psoDesc.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
-        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-        psoDesc.DepthStencilState.DepthEnable = FALSE;
-        psoDesc.SampleMask = UINT_MAX;
-        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        psoDesc.SampleDesc = { 1, 0 };
+        // SRV上書き
+        // 送られてきたtexPtrsが有効であればコピー
+        // コピー後リソースやconstantsをSRV&CBV登録
+        //一度コピーしておかないと、チラつく(直メモリなため)
+        if (texPtrs) {
+            UINT step = g_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            for (int i = 0; i < 8; i++) {
+                auto* tex = reinterpret_cast<ID3D12Resource*>(texPtrs[i]);
+                if (!tex) continue;
 
-        ComPtr<ID3D12PipelineState> newPSO;
-        if (SUCCEEDED(g_Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&newPSO))))
-        {
-            g_PSO = newPSO; // アトミックに差し替え
+                D3D12_RESOURCE_DESC desc = tex->GetDesc();
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                srvDesc.Format = desc.Format;
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srvDesc.Texture2D.MipLevels = desc.MipLevels;
+
+                CD3DX12_CPU_DESCRIPTOR_HANDLE h(
+                    g_CbvSrvHeap->GetCPUDescriptorHandleForHeapStart());
+                h.Offset(8 + i, step); // slot 8〜15 = t0〜t7
+
+                g_Device->CreateShaderResourceView(tex, &srvDesc, h);
+            }
         }
-
-
-
-
-
 
         // ── ここから Draw テスト ──────────────────────────
+
         g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
         g_CmdAlloc[g_FrameIndex]->Reset();
         g_CmdList->Reset(g_CmdAlloc[g_FrameIndex].Get(), g_PSO.Get());
-
         // バックバッファをRTに遷移
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
             g_BackBuffers[g_FrameIndex].Get(),
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
         g_CmdList->ResourceBarrier(1, &barrier);
-
         // RTV セット
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
             g_RtvHeap->GetCPUDescriptorHandleForHeapStart(),
             g_FrameIndex, g_RtvDescSize);
         g_CmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-
         // クリア（確認用に赤くしておく）
-        float clearColor[] = { 1, 1, 0, 1 };
+        float clearColor[] = { 0, 0, 0, 1 };
         g_CmdList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-
         // ビューポート
         D3D12_VIEWPORT vp = { 0, 0, 1920, 1080, 0, 1 };
         D3D12_RECT sc = { 0, 0, 1920, 1080 };
         g_CmdList->RSSetViewports(1, &vp);
         g_CmdList->RSSetScissorRects(1, &sc);
-
         // 描画
         g_CmdList->SetGraphicsRootSignature(g_RootSignature.Get());
+        ID3D12DescriptorHeap* heaps[] = { g_CbvSrvHeap.Get() };
+        g_CmdList->SetDescriptorHeaps(1, heaps);
+        g_CmdList->SetGraphicsRootDescriptorTable(0, g_CbvSrvHeap->GetGPUDescriptorHandleForHeapStart());
         g_CmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        g_CmdList->DrawInstanced(3, 1, 0, 0); // フルスクリーントライアングル
-
+        g_CmdList->DrawInstanced(3, 1, 0, 0);
         // Presentに遷移
         auto barrier2 = CD3DX12_RESOURCE_BARRIER::Transition(
             g_BackBuffers[g_FrameIndex].Get(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PRESENT);
         g_CmdList->ResourceBarrier(1, &barrier2);
-
         g_CmdList->Close();
         ID3D12CommandList* lists[] = { g_CmdList.Get() };
         g_CommandQueue->ExecuteCommandLists(1, lists);
         g_SwapChain->Present(1, 0);
-
         // フェンス待ち
         g_FenceValue[g_FrameIndex]++;
         g_CommandQueue->Signal(g_Fence.Get(), g_FenceValue[g_FrameIndex]);
         g_Fence->SetEventOnCompletion(g_FenceValue[g_FrameIndex], g_FenceEvent);
         WaitForSingleObject(g_FenceEvent, INFINITE);
-        // ── Draw テストここまで ──────────────────────────
-
-
-
-
-
-
-
-
-
-
-
-
-
     }
 
     __declspec(dllexport) void DW_Release()
@@ -341,192 +318,3 @@ extern "C"
         if (g_hWnd) { DestroyWindow(g_hWnd); g_hWnd = nullptr; }
     }
 }
-
-
-
-
-
-
-
-
-//
-//// ===== グローバル =====
-//
-//
-//ComPtr<ID3D12CommandAllocator>    g_CommandAllocator;
-//ComPtr<ID3D12GraphicsCommandList> g_CommandList;
-//ComPtr<ID3D12DescriptorHeap>      g_RTVHeap;
-//UINT                              g_RTVDescriptorSize = 0;
-//ComPtr<ID3D12DescriptorHeap>      g_SRVHeap;
-//
-//ComPtr<ID3D12Resource>            g_RenderTargets[2];
-//UINT                              g_FrameIndex = 0;
-//
-//ComPtr<ID3D12Fence>               g_Fence;
-//UINT64                            g_FenceValue = 0;
-//HANDLE                            g_FenceEvent = nullptr;
-//
-//ComPtr<ID3D12RootSignature>       g_RootSignature;
-//ComPtr<ID3D12PipelineState>       g_PSO;
-//
-//ComPtr<ID3D12Resource>            g_UnityTexture;
-//
-//// ===== シェーダ =====
-//const char* g_VS = R"(
-//struct VSOut {
-//    float4 pos : SV_POSITION;
-//    float2 uv  : TEXCOORD0;
-//};
-//
-//VSOut main(uint id : SV_VertexID)
-//{
-//    VSOut o;
-//
-//    float2 pos = float2(
-//        (id == 2) ? 3.0 : -1.0,
-//        (id == 1) ? 3.0 : -1.0
-//    );
-//
-//    o.pos = float4(pos, 0.0, 1.0);
-//
-//    // Unity の RT は上下反転しているので V を反転
-//    float2 uv = (pos + 1.0) * 0.5;
-//    uv.y = 1.0 - uv.y;
-//    o.uv = uv;
-//
-//    return o;
-//}
-//)";
-//
-//const char* g_PS = R"(
-//Texture2D tex0 : register(t0);
-//SamplerState samp : register(s0);
-//
-//float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
-//{
-//    return tex0.Sample(samp, uv);
-//}
-//)";
-//
-
-//
-//void UpdateSRV(ID3D12Resource* tex)
-//{
-//    if (!tex || !g_Device || !g_SRVHeap) return;
-//
-//    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-//    srvDesc.Format = tex->GetDesc().Format;
-//    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-//    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-//    srvDesc.Texture2D.MipLevels = 1;
-//
-//    CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-//        g_SRVHeap->GetCPUDescriptorHandleForHeapStart(),
-//        0,
-//        g_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-//    );
-//
-//    g_Device->CreateShaderResourceView(tex, &srvDesc, handle);
-//}
-//
-//void RenderOverlay()
-//{
-//    if (!g_SwapChain || !g_CommandAllocator || !g_CommandList) return;
-//
-//    g_CommandAllocator->Reset();
-//    g_CommandList->Reset(g_CommandAllocator.Get(), g_PSO.Get());
-//
-//    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
-//        g_RTVHeap->GetCPUDescriptorHandleForHeapStart();
-//    rtvHandle.ptr += g_FrameIndex * g_RTVDescriptorSize;
-//
-//    g_CommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-//
-//    DXGI_SWAP_CHAIN_DESC scDesc = {};
-//    g_SwapChain->GetDesc(&scDesc);
-//
-//    D3D12_VIEWPORT vp = {};
-//    vp.TopLeftX = 0;
-//    vp.TopLeftY = 0;
-//    vp.Width = static_cast<float>(scDesc.BufferDesc.Width);
-//    vp.Height = static_cast<float>(scDesc.BufferDesc.Height);
-//    vp.MinDepth = 0.0f;
-//    vp.MaxDepth = 1.0f;
-//
-//    D3D12_RECT scissor = {};
-//    scissor.left = 0;
-//    scissor.top = 0;
-//    scissor.right = scDesc.BufferDesc.Width;
-//    scissor.bottom = scDesc.BufferDesc.Height;
-//
-//    g_CommandList->RSSetViewports(1, &vp);
-//    g_CommandList->RSSetScissorRects(1, &scissor);
-//
-//    g_CommandList->SetGraphicsRootSignature(g_RootSignature.Get());
-//
-//    ID3D12DescriptorHeap* heaps[] = { g_SRVHeap.Get() };
-//    g_CommandList->SetDescriptorHeaps(1, heaps);
-//
-//    g_CommandList->SetGraphicsRootDescriptorTable(
-//        0,
-//        g_SRVHeap->GetGPUDescriptorHandleForHeapStart()
-//    );
-//
-//    g_CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-//    g_CommandList->DrawInstanced(3, 1, 0, 0);
-//
-//    g_CommandList->Close();
-//    ID3D12CommandList* lists[] = { g_CommandList.Get() };
-//    g_CommandQueue->ExecuteCommandLists(1, lists);
-//
-//    g_SwapChain->Present(1, 0);
-//
-//    // ★ フェンス同期はここではしない
-//    g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
-//}
-//
-//extern "C"
-//{
-
-
-//
-//    __declspec(dllexport)
-//        void DW_Release()
-//    {
-//        if (g_CommandQueue && g_Fence)
-//        {
-//            const UINT64 fenceToWait = ++g_FenceValue;
-//            g_CommandQueue->Signal(g_Fence.Get(), fenceToWait);
-//            if (g_Fence->GetCompletedValue() < fenceToWait)
-//            {
-//                g_Fence->SetEventOnCompletion(fenceToWait, g_FenceEvent);
-//                WaitForSingleObject(g_FenceEvent, INFINITE);
-//            }
-//        }
-//
-//        for (int i = 0; i < 2; ++i)
-//            g_RenderTargets[i].Reset();
-//
-//        g_PSO.Reset();
-//        g_RootSignature.Reset();
-//        g_SRVHeap.Reset();
-//        g_RTVHeap.Reset();
-//        g_CommandList.Reset();
-//        g_CommandAllocator.Reset();
-//        g_CommandQueue.Reset();
-//        g_SwapChain.Reset();
-//        g_Device.Reset();
-//        g_UnityTexture.Reset();
-//        g_Fence.Reset();
-//
-//        if (g_FenceEvent)
-//        {
-//            CloseHandle(g_FenceEvent);
-//            g_FenceEvent = nullptr;
-//        }
-//
-//        if (g_hWnd)
-//        {
-//            DestroyWindow(g_hWnd);
-//            g_hWnd = nullptr;
-//        }
